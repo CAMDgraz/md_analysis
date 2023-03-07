@@ -21,7 +21,7 @@ valid_trajs = set(['arc', 'dcd', 'binpos', 'xtc', 'trr', 'hdf5', 'h5', 'ncdf',
 
 def parse_arguments():
     desc = ('\n Simple MD trajectories analysis')
-    usage = '%(prog)s -traj trajectory [options]'
+    usage = '%(prog)s -traj trajectory_file [options]'
     parser = argparse.ArgumentParser(prog='md_analysis',
                                      description=desc,
                                      add_help=True,
@@ -30,28 +30,38 @@ def parse_arguments():
     # -- Arguments: Trajectory ------------------------------------------------
     traj = parser.add_argument_group(title='Trajectory input options')
     traj.add_argument('-traj', dest='trajectory_file', action='store',
-                      help='Path to the trajectory file', type=str,
+                      help='Path to the trajectory file [required]', type=str,
                       required=True, default=None, metavar='trajectory')
     traj.add_argument('-top', dest='topology_file', action='store',
                       help='Path to the topology file', type=str,
                       required=False, default=None, metavar='topology')
     traj.add_argument('-f', dest='first', action='store',
-                      help='First frame to analyze', type=int,
-                      required=False, default=0, metavar='first_frame')
+                      help='First frame to analyze starting at 0'
+                      ' [default: %(default)s]',
+                      type=int, required=False, default=1,
+                      metavar='first_frame')
     traj.add_argument('-l', dest='last', action='store',
-                      help='Last frame to analyze', type=int,
+                      help='Last frame to analyze (counting from 0)'
+                      ' [default: last frame]', type=int,
                       required=False, default=None, metavar='last_frame')
     traj.add_argument('-s', dest='stride', action='store',
-                      help='Stride of frames to analyze', type=int,
+                      help='Stride of frames to analyze'
+                      ' [default: %(default)s]', type=int,
                       required=False, default=1, metavar='stride')
     traj.add_argument('-sel', dest='selections', action='store',
-                      help='Atom selection (MDTraj syntax)',
+                      help='Atom selection (MDTraj syntax)'
+                      ' [default: %(default)s]',
                       required=False, default='all', metavar='selections')
+    # -- Arguments: Analysis --------------------------------------------------
+    analysis = parser.add_argument_group(title='Analiysis options')
+    analysis.add_argument('-labels', dest='labels', nargs='+',
+                          help='Name of the selections for the legend of the'
+                          ' rmsd plot', required=False, type=str, default=None)
     # -- Arguments: Output ----------------------------------------------------
     out = parser.add_argument_group(title='Output options')
     out.add_argument('-odir', dest='outdir', action='store',
                      help='Output directory to store the analysis',
-                     type=str, required=False, default='./', metavar='.')
+                     type=str, required=False, default='./', metavar='[path]')
 
     args = parser.parse_args()
     return args
@@ -166,20 +176,11 @@ def general_canvas(figsize, dpi):
 
 
 if __name__ == '__main__':
-
-    # -- Load arguments -------------------------------------------------------
     args = parse_arguments()
 
-    # -- Load and process trajectory ------------------------------------------
-    print('\n** Loading trajectory **')
-    traj = load_traj(args.trajectory_file, args.topology_file, valid_trajs,
-                     valid_tops)
-    if traj.n_frames != 1:
-        traj = range_traj(traj, args.first, args.last, args.stride)
-
-    selections = args.selections.split(':')
-
-    # -- Outdir process -------------------------------------------------------
+    # =========================================================================
+    # Checking out dir
+    # =========================================================================
     if args.outdir != './':
         try:
             os.makedirs(args.outdir)
@@ -187,7 +188,33 @@ if __name__ == '__main__':
             raise Exception('\n\n>>> Output dir already exist, please especify'
                             ' a different one')
 
-    # -- RMSD -----------------------------------------------------------------
+    # =========================================================================
+    # Loading and processing the trajectory
+    # =========================================================================
+
+    if args.last:
+        last = args.last - 1  # For avoid 0-based index
+    last = None
+    first = args.first - 1  # For avoid 0-based index
+
+    print('\n** Loading trajectory **')
+    traj = load_traj(args.trajectory_file, args.topology_file, valid_trajs,
+                     valid_tops)
+    if traj.n_frames != 1:
+        traj = range_traj(traj, first, last, args.stride)
+
+    selections = args.selections.split(':')  # splitting different selections
+    if not args.labels or (len(args.labels) != len(selections)):
+        print('\n>>> No labels provided for the rmsd legend\n'
+              '    or it is not equal the number of labels and selections.')
+        labels = ['sel_{}'.format(sel) for sel in
+                  range(1, len(selections) + 1)]
+
+    print('{} frames loaded\nDone!'.format(traj.n_frames))
+
+    # =========================================================================
+    #  RMSD
+    # =========================================================================
     general_canvas([12, 8], 300)
     fig, ax = plt.subplots()
 
@@ -200,7 +227,7 @@ if __name__ == '__main__':
         rmsd *= 10
         rmsd_per_sel[idx] = rmsd
 
-        ax.plot(np.arange(1, traj.n_frames+1, 1), rmsd, label=selection)
+        ax.plot(np.arange(1, traj.n_frames+1, 1), rmsd, label=labels[idx])
 
     ax.set_ylabel(r'RMSD $(\AA)$')
     ax.set_xlabel(r'Frame')
@@ -208,10 +235,19 @@ if __name__ == '__main__':
     fig.savefig('{}.png'.format(os.path.join(args.outdir, 'RMSD')))
     plt.close(fig)
 
-    rmsd_out = np.vstack((np.arange(1, traj.n_frames+1, 1), rmsd_per_sel))
-    np.savetxt('rmsd.dat', rmsd_out.T, delimiter=',')
+    with open(os.path.join(args.outdir, 'rmsd.dat'), 'w') as rmsd_out:
+        rmsd_out.writelines(['{},'.format(sel) for sel in labels])
+        rmsd_out.write('Frame\n')
+        for frame in range(traj.n_frames):
+            rmsd_out.writelines(['{:.2f},'.format(sel[frame])
+                                 for sel in rmsd_per_sel])
+            rmsd_out.write('{}\n'.format(frame + 1))
 
-    # -- RMSF per residue -----------------------------------------------------
+    print('Done!')
+
+    # =========================================================================
+    #  RMSF per residue
+    # =========================================================================
     print('\n** Calculating RMSF per residue **')
     residues = np.arange(0, traj.n_residues)
     rmsd_per_res = np.zeros((len(residues), traj.n_frames))
@@ -226,11 +262,15 @@ if __name__ == '__main__':
     rmsf = [np.mean(rmsd)*10 for rmsd in rmsd_per_res]
 
     fig, ax = plt.subplots()
-    ax.plot(np.arange(1, traj.n_residues + 1, 1), rmsf, color='black')
+    ax.plot(residues + 1, rmsf, color='black')
     ax.set_xlabel(r'Residue')
     ax.set_ylabel(r'RMSF $(\AA)$')
     fig.savefig('{}.png'.format(os.path.join(args.outdir, 'RMSF')))
     plt.close(fig)
 
-    rmsf_out = np.vstack((np.arange(1, traj.n_residues + 1, 1), rmsf))
-    np.savetxt('rmsf.dat', rmsf_out.T, delimiter=',')
+    with open(os.path.join(args.outdir, 'rmsf.dat'), 'w') as rmsf_out:
+        rmsf_out.write('RMSF,ResId\n')
+        for res in residues:
+            rmsf_out.write('{:.2f},{}\n'.format(rmsf[res], res + 1))
+
+    print('Done!')
