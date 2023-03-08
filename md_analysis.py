@@ -49,8 +49,8 @@ def parse_arguments():
                       ' [default: %(default)s]', type=int,
                       required=False, default=1, metavar='stride')
     traj.add_argument('-sel', dest='selections', action='store',
-                      help='Atom selection (MDTraj syntax)'
-                      ' [default: %(default)s]',
+                      help='Atom selections (MDTraj syntax) separated by ":"'
+                      ' (e.g. "all:backbone") [default: %(default)s]',
                       required=False, default='all', metavar='selections')
     # -- Arguments: Analysis --------------------------------------------------
     analysis = parser.add_argument_group(title='Analiysis options')
