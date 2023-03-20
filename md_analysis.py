@@ -36,31 +36,49 @@ def parse_arguments():
                       help='Path to the topology file', type=str,
                       required=False, default=None, metavar='topology')
     traj.add_argument('-f', dest='first', action='store',
-                      help='First frame to analyze starting at 0'
+                      help='First frame to analyze starting at 1'
                       ' [default: %(default)s]',
                       type=int, required=False, default=1,
                       metavar='first_frame')
     traj.add_argument('-l', dest='last', action='store',
-                      help='Last frame to analyze (counting from 0)'
+                      help='Last frame to analyze'
                       ' [default: last frame]', type=int,
                       required=False, default=None, metavar='last_frame')
     traj.add_argument('-s', dest='stride', action='store',
                       help='Stride of frames to analyze'
                       ' [default: %(default)s]', type=int,
                       required=False, default=1, metavar='stride')
-    traj.add_argument('-sel', dest='selections', action='store',
-                      help='Atom selections (MDTraj syntax) separated by ":"'
-                      ' (e.g. "all:backbone") [default: %(default)s]',
-                      required=False, default='all', metavar='selections')
+
     # -- Arguments: Analysis --------------------------------------------------
     analysis = parser.add_argument_group(title='Analiysis options')
-    analysis.add_argument('-labels', dest='labels', nargs='+',
+    analysis.add_argument('-sel', dest='selections', action='store',
+                          help='Atom selections (MDTraj syntax) separated by'
+                          ' ":" (e.g. "all:backbone") [default: %(default)s]',
+                          required=False, default='all', metavar='selections')
+    analysis.add_argument('-labels', dest='labels', action='store',
                           help='Name of the selections for the legend of the'
-                          ' rmsd plot', required=False, type=str, default=None)
+                          ' rmsd plot separated by ":" (e.g. "all:backbone")',
+                          required=False, type=str, default=None,
+                          metavar='labels')
+    analysis.add_argument('-i_time', dest='i_time', action='store',
+                          help='time of the first frame (ns), note is the'
+                          ' first in the trajectory and not the one in the -f'
+                          ' option, if none is provided frame number will be'
+                          ' used instead [default: %(default)s]',
+                          required=False, default=None, metavar='initial_time',
+                          type=float)
+    analysis.add_argument('-tstep', dest='tstep', action='store',
+                          help='Time step between frames in the original'
+                          ' trajectory (ns), if none is provided'
+                          ' frame number will be use instead'
+                          ' [default: %(default)s]', metavar='time_step',
+                          default=None, type=float, required=False)
+
     # -- Arguments: Output ----------------------------------------------------
     out = parser.add_argument_group(title='Output options')
     out.add_argument('-odir', dest='outdir', action='store',
-                     help='Output directory to store the analysis',
+                     help='Output directory to store the analysis'
+                     ' [default: %(default)s]',
                      type=str, required=False, default='./', metavar='[path]')
 
     args = parser.parse_args()
@@ -126,8 +144,8 @@ def atoms_sel(traj, selection):
 
 def range_traj(traj, first, last, stride):
     n_frames = traj.n_frames
-    first_range = range(0, n_frames - 1)
-    last_range = range(first + 1, n_frames)
+    first_range = range(0, n_frames)
+    last_range = range(first + 1, n_frames+1)
 
     if last is not None:
         stride_range = range(1, last - first)
@@ -136,11 +154,12 @@ def range_traj(traj, first, last, stride):
 
     if first not in first_range:
         raise ValueError('\n\n>>> First frame must be in the interval'
-                         ' [{}, {}]'.format(first_range.start,
+                         ' [{}, {}]'.format(first_range.start + 1,
                                             first_range.stop))
     if last and (last not in last_range):
         raise ValueError('\n\n>>> Last frame must be in the interval'
-                         ' [{}, {}]'.format(last_range.start, last_range.stop))
+                         ' [{}, {}]'.format(last_range.start + 1,
+                                            last_range.stop))
     if stride not in stride_range:
         raise ValueError('\n\n>>> Stride must be in the interval'
                          ' [{}, {}]'.format(stride_range.start,
@@ -191,26 +210,30 @@ if __name__ == '__main__':
     # =========================================================================
     # Loading and processing the trajectory
     # =========================================================================
-
-    if args.last:
-        last = args.last - 1  # For avoid 0-based index
+    first = args.first - 1  # Avoid 0-based index for the user
     last = None
-    first = args.first - 1  # For avoid 0-based index
+    if args.last:
+        last = args.last  # Avoid 0-base index for the user
 
     print('\n** Loading trajectory **')
     traj = load_traj(args.trajectory_file, args.topology_file, valid_trajs,
                      valid_tops)
+    total_frames = traj.n_frames
     if traj.n_frames != 1:
         traj = range_traj(traj, first, last, args.stride)
 
+    print('{} frames loaded\nDone!'.format(traj.n_frames))
+
     selections = args.selections.split(':')  # splitting different selections
-    if not args.labels or (len(args.labels) != len(selections)):
-        print('\n>>> No labels provided for the rmsd legend\n'
-              '    or it is not equal the number of labels and selections.')
+    if not args.labels:
+        print('\n>>> No labels provided for the rmsd legend\n')
         labels = ['sel_{}'.format(sel) for sel in
                   range(1, len(selections) + 1)]
-
-    print('{} frames loaded\nDone!'.format(traj.n_frames))
+    if args.labels:
+        labels = args.labels.split(':')  # splitting different labels
+        if len(labels) != len(selections):
+            print('\n>>> Number of labels provided for the rmsd legend\n'
+                  '    is different from the number of selections.')
 
     # =========================================================================
     #  RMSD
@@ -220,6 +243,27 @@ if __name__ == '__main__':
 
     print('\n** Calculating RMSD **')
 
+    if (args.tstep == None) or (args.i_time == None):
+        print('\n>>> Using frame number in the x axis')
+        if not last:
+            x_axis = np.arange(first + 1, total_frames+1, args.stride)
+        else:
+            x_axis = np.arange(first + 1, args.last+1, args.stride)
+        x_axis_label = r'Frame'
+
+    elif (args.tstep != None) and (args.i_time != None):
+        print('\n>>> Using time in the x axis')
+        if not last:
+            x_axis = np.arange(args.tstep * first + args.i_time,
+                               args.i_time + total_frames * args.tstep,
+                               args.stride * args.tstep)
+        else:
+            x_axis = np.arange(args.tstep * first + args.i_time,
+                               args.i_time + last * args.tstep,
+                               args.stride * args.tstep)
+
+        x_axis_label = r'Time $(ns)$'
+
     rmsd_per_sel = np.zeros((len(selections), traj.n_frames))
     for idx, selection in enumerate(selections):
         traj_atoms = atoms_sel(traj, selection)
@@ -227,10 +271,10 @@ if __name__ == '__main__':
         rmsd *= 10
         rmsd_per_sel[idx] = rmsd
 
-        ax.plot(np.arange(1, traj.n_frames+1, 1), rmsd, label=labels[idx])
+        ax.plot(x_axis, rmsd, label=labels[idx])
 
     ax.set_ylabel(r'RMSD $(\AA)$')
-    ax.set_xlabel(r'Frame')
+    ax.set_xlabel(x_axis_label)
     ax.legend(loc='lower right')
     fig.savefig('{}.png'.format(os.path.join(args.outdir, 'RMSD')))
     plt.close(fig)
